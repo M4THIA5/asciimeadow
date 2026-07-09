@@ -1,0 +1,21 @@
+tag_prefix = "v"
+from_latest_tag = true
+ignore_merge_commits = true
+branch_whitelist = ["main"]
+
+pre_bump_hooks = [
+    "cargo set-version {{version}}",
+    "bash packaging/bump-spec.sh {{version}}",
+]
+
+post_bump_hooks = [
+    "git push --atomic origin main {{version_tag}}",
+    "curl -fsS -X POST \"$COPR_WEBHOOK_URL\"",
+]
+
+[changelog]
+path = "CHANGELOG.md"
+template = "remote"
+remote = "github.com"
+owner = "M4THIA5"
+repository = "asciimeadow"

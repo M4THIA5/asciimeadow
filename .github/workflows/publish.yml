@@ -1,0 +1,74 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cocogitto + cargo-edit
+        run: cargo install cocogitto@7.0.0 cargo-edit@0.13.11 --locked
+
+      - name: Configure bot git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine whether a release is needed
+        id: check
+        run: |
+          # Journal hors du checkout : un fichier créé dans le worktree
+          # rendrait le dépôt « sale » et ferait échouer le check clean de cog.
+          err="${RUNNER_TEMP}/cog-err.log"
+          set +e
+          version="$(cog bump --dry-run --auto 2>"$err")"
+          code=$?
+          set -e
+          cat "$err" >&2
+          if [ "$code" -eq 0 ] && [ -n "$version" ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Next version: $version"
+          elif grep -qF "No conventional commit found to bump" "$err"; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "No releasable commit since the last tag."
+          else
+            echo "Unexpected failure of 'cog bump --dry-run --auto' (code $code)." >&2
+            exit 1
+          fi
+
+      - name: Check COPR secret (fail-fast before any bump)
+        if: steps.check.outputs.release == 'true'
+        env:
+          COPR_WEBHOOK_URL: ${{ secrets.COPR_WEBHOOK_URL }}
+        run: |
+          if [ -z "$COPR_WEBHOOK_URL" ]; then
+            echo "COPR_WEBHOOK_URL secret missing: bump cancelled (avoid a tag with no COPR build)." >&2
+            exit 1
+          fi
+
+      - name: Bump + tag + push + trigger COPR
+        if: steps.check.outputs.release == 'true'
+        env:
+          COPR_WEBHOOK_URL: ${{ secrets.COPR_WEBHOOK_URL }}
+        run: cog bump --auto --skip-ci
